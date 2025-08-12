@@ -30,3 +30,26 @@ with check (true);
 
 -- Optional: simple index to speed up queries
 create index if not exists trades_status_created_idx on public.trades (status, created_at desc);
+-- Add a per-trade secret token
+alter table public.trades
+add column if not exists manage_token uuid not null default gen_random_uuid();
+
+-- Optional: faster lookups
+create index if not exists trades_manage_idx on public.trades (id, manage_token);
+
+-- RPC to close a trade with the correct token
+create or replace function public.close_trade(p_id uuid, p_token uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+as $$
+  update public.trades
+     set status = 'closed'
+   where id = p_id
+     and manage_token = p_token
+     and status <> 'closed';
+  select found;  -- returns true if a row was changed
+$$;
+
+grant execute on function public.close_trade(uuid, uuid) to anon, authenticated;
