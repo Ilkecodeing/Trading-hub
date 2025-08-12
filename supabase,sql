@@ -1,0 +1,32 @@
+-- Create trades table
+create extension if not exists pgcrypto; -- for gen_random_uuid() on some instances
+
+create table if not exists public.trades (
+  id uuid primary key default gen_random_uuid(),
+  handle text not null,
+  contact_discord text,
+  contact_roblox text,
+  notes text,
+  haves text[] not null check (array_length(haves, 1) between 1 and 20),
+  wants text[] not null check (array_length(wants, 1) between 1 and 20),
+  status text not null default 'open' check (status in ('open','matched','closed')),
+  created_at timestamptz not null default now()
+);
+
+-- Enable row level security
+alter table public.trades enable row level security;
+
+-- Policies: allow public read and insert only (no update/delete)
+drop policy if exists trades_select_all on public.trades;
+drop policy if exists trades_insert_any on public.trades;
+
+create policy trades_select_all on public.trades
+for select
+using (true);
+
+create policy trades_insert_any on public.trades
+for insert
+with check (true);
+
+-- Optional: simple index to speed up queries
+create index if not exists trades_status_created_idx on public.trades (status, created_at desc);
