@@ -1,6 +1,15 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <style>
+    html,body{height:100%;margin:0}
+    #swimCanvas{
+      position:fixed; inset:0; z-index:5; pointer-events:none;
+      width:100vw; height:100vh; display:block; image-rendering: pixelated;
+    }
+    .hint{position:fixed;left:12px;bottom:12px;color:#9fd3ff;font:12px system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;opacity:.85}
+
+    </style>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Grow a Garden — Trader Board (MVP)</title>
@@ -14,6 +23,7 @@
   </style>
 </head>
 <body class="bg-gray-50 text-gray-900">
+  <canvas id="swimCanvas"></canvas>
   <header class="sticky top-0 z-50 bg-white/90 backdrop-blur border-b">
     <div class="max-w-5xl mx-auto px-4 py-3 flex items-center gap-4">
       <div class="font-bold tracking-tight text-xl">🌱 GAG Trader (MVP)</div>
@@ -115,5 +125,133 @@
   </main>
 
   <script defer src="./app.js"></script>
+  <script>
+    const canvas = document.getElementById('swimCanvas');
+  const ctx = canvas.getContext('2d');
+  function resize(){ canvas.width = innerWidth; canvas.height = innerHeight; }
+  addEventListener('resize', resize, {passive:true}); resize();
+  ctx.imageSmoothingEnabled = false; // crisp pixels
+
+  // ===== Config =====
+  const SIDE_MARGIN = 80;     // px from left/right where they swim
+  const TOP_MARGIN = 8;       // breathing room at top
+  const BOTTOM_MARGIN = 8;    // breathing room at bottom
+
+  const J_SCALE = 24;         // jelly pixel scale
+  const P_SCALE = 22;         // puffer pixel scale
+  const SPEED_J = 52;         // px/s vertical speed for jelly
+  const SPEED_P = 46;         // px/s for puffer
+
+  // ===== Helpers =====
+  const W12=12, H12=12; // convenience
+  const fillRange=(g,y,x1,x2,color)=>{ g.fillStyle=color; for(let x=x1;x<=x2;x++) g.fillRect(x,y,1,1); };
+
+  // ===== Jellyfish sprite (12x12) =====
+  const jelly = document.createElement('canvas'); jelly.width=W12; jelly.height=H12;
+  const j = jelly.getContext('2d');
+  const JCOL = { body:'#79cfff', highlight:'#d8f6ff', tent:'#4aa0d6' };
+  (function drawJelly(){
+    j.clearRect(0,0,W12,H12);
+    fillRange(j,0,5,6,JCOL.highlight);
+    fillRange(j,1,4,7,JCOL.body);
+    fillRange(j,2,3,8,JCOL.body);
+    fillRange(j,3,2,9,JCOL.body);
+    fillRange(j,4,2,9,JCOL.body);
+    fillRange(j,5,2,9,JCOL.body);
+    fillRange(j,6,3,8,JCOL.body);
+    fillRange(j,7,4,7,JCOL.body);
+    j.fillStyle=JCOL.tent;
+    [[8,[3,5,7,9]],[9,[3,5,7,9]],[10,[4,6,8]],[11,[5,7]]].forEach(([y,xs])=>xs.forEach(x=>j.fillRect(x,y,1,1)));
+  })();
+
+  // ===== Pufferfish sprite (12x12) =====
+  const puffer = document.createElement('canvas'); puffer.width=W12; puffer.height=H12;
+  const p = puffer.getContext('2d');
+  const PCOL = { body:'#ffd86b', shade:'#e3b856', spike:'#fff2b4', eye:'#0b1930', blush:'#ff9db2', shine:'#fff9de' };
+  (function drawPuffer(){
+    p.clearRect(0,0,W12,H12);
+    // body circle-ish
+    fillRange(p,2,4,7,PCOL.body);
+    fillRange(p,3,3,8,PCOL.body);
+    fillRange(p,4,2,9,PCOL.body);
+    fillRange(p,5,2,9,PCOL.body);
+    fillRange(p,6,2,9,PCOL.body);
+    fillRange(p,7,3,8,PCOL.body);
+    fillRange(p,8,4,7,PCOL.body);
+    // spikes around
+    const spikes=[ [1,5],[1,6],[2,3],[2,8],[3,2],[3,9],[4,1],[5,1],[6,1],[7,2],[8,3],[8,8],[7,9],[6,10],[5,10],[4,10] ];
+    p.fillStyle=PCOL.spike; spikes.forEach(([y,x])=>p.fillRect(x,y,1,1));
+    // shade lower-right
+    fillRange(p,6,7,9,PCOL.shade); fillRange(p,7,6,8,PCOL.shade); fillRange(p,5,8,9,PCOL.shade);
+    // highlight
+    p.fillStyle=PCOL.shine; p.fillRect(6,3,1,1); p.fillRect(5,3,1,1);
+    // eyes + blush
+    p.fillStyle='#ffffff'; p.fillRect(4,5,1,1); p.fillRect(7,5,1,1);
+    p.fillStyle=PCOL.eye; p.fillRect(5,5,1,1); p.fillRect(8,5,1,1);
+    p.fillStyle=PCOL.blush; p.fillRect(4,7,1,1); p.fillRect(7,7,1,1);
+    // tiny mouth
+    p.fillStyle=PCOL.eye; p.fillRect(6,7,1,1);
+  })();
+
+  // ===== Swimmer model =====
+  function makeSwimmer(sprite, sw, sh, scale, speed, startY, phase=0){
+    return { sprite, sw, sh, scale, speed, y:startY, lane:'left', dir:1, phase };
+  }
+
+  // start near the top-left, slightly staggered
+  let swimmers = [
+    makeSwimmer(jelly, W12, H12, J_SCALE, SPEED_J, TOP_MARGIN + 10, 0.0),
+    makeSwimmer(puffer, W12, H12, P_SCALE, SPEED_P, TOP_MARGIN + 90, 1.7)
+  ];
+
+  let last=0, t=0;
+  function loop(ms){
+    const dt = ((ms - last) || 16.6) / 1000; last = ms; t += dt;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    const leftX  = Math.round(SIDE_MARGIN);
+    const rightX = Math.round(canvas.width - SIDE_MARGIN);
+    const topY   = Math.round(TOP_MARGIN);
+    const bottomY= Math.round(canvas.height - BOTTOM_MARGIN);
+
+    for(const s of swimmers){
+      const ph = s.sh * s.scale;
+      // advance along the vertical lane
+      s.y += s.dir * s.speed * dt;
+
+      // bounds for this sprite
+      const minY = topY;
+      const maxY = bottomY - ph;
+
+      // turn + lane swap at ends
+      if(s.lane==='left' && s.y >= maxY){ s.y = maxY; s.lane='right'; s.dir = -1; }
+      else if(s.lane==='right' && s.y <= minY){ s.y = minY; s.lane='left'; s.dir = +1; }
+
+      // horizontal position by lane, plus a gentle wiggle so it looks alive
+      const wiggle = Math.sin((t+s.phase)*2.2) * 6; // px
+      const xCenter = (s.lane==='left' ? leftX : rightX) + wiggle;
+
+      // slight vertical bobbing
+      const yBob = Math.sin((t+s.phase)*3.0) * 2;
+
+      // draw (with an optional pulse for puffer)
+      const isPuffer = (s.sprite === puffer);
+      const pulse = isPuffer ? (1 + 0.08*Math.sin((t+s.phase)*3.6)) : 1;
+      const drawW = Math.round(s.sw * s.scale * pulse);
+      const drawH = Math.round(s.sh * s.scale * pulse);
+
+      ctx.drawImage(
+        s.sprite,
+        Math.round(xCenter - drawW/2),
+        Math.round(s.y + yBob),
+        drawW, drawH
+      );
+    }
+
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+  </script>
+
 </body>
 </html>
